@@ -16,7 +16,6 @@ pub fn mssql_config(url: &Url) -> Result<Config, MsSQLBridgeSourceError> {
         ));
     }
     let mut config = Config::new();
-    config.connect_retry_count(0);
     config.host(parts[0]);
     if let Some(port) = url.port() {
         config.port(port);
@@ -31,11 +30,8 @@ pub fn mssql_config(url: &Url) -> Result<Config, MsSQLBridgeSourceError> {
     config.application_name("tiberius");
     let params: HashMap<String, String> = url.query_pairs().into_owned().collect();
     if params.get("trusted_connection").map(String::as_str) == Some("true") {
-        #[cfg(any(windows, feature = "integrated-auth-gssapi"))]
-        config.authentication(AuthMethod::Integrated);
-        #[cfg(all(not(windows), not(feature = "integrated-auth-gssapi")))]
         return Err(MsSQLBridgeSourceError::Configuration(
-            "trusted_connection requires integrated-auth-gssapi on this platform".into(),
+            "this bridge version does not expose integrated-authentication features".into(),
         ));
     }
     if params
@@ -87,11 +83,15 @@ impl ManageConnection for ConnectionManager {
         &self,
         conn: &mut bb8::PooledConnection<'_, Self>,
     ) -> Result<(), Self::Error> {
-        conn.query_first("SELECT 1", &[]).await.map(|_| ())
+        conn.query("SELECT 1", &[])
+            .await?
+            .into_row()
+            .await
+            .map(|_| ())
     }
 
     fn has_broken(&self, conn: &mut Client) -> bool {
-        conn.is_connection_dead() || conn.has_pending_results()
+        conn.is_connection_dead()
     }
 }
 
@@ -105,7 +105,7 @@ mod tests {
         let config = mssql_config(&url).unwrap();
         assert_eq!(config.datasource_string(), "tcp:host,1444");
         let context = config.to_client_context();
-        assert_eq!(context.connect_retry_count, 0);
+        assert_eq!(context.connect_retry_count, 1);
         assert_eq!(context.user_name, "user@name");
         assert_eq!(context.password, "p%ss");
         assert_eq!(context.database, "db name");
@@ -128,6 +128,7 @@ mod tests {
             "mssql://localhost/db?encrypt=typo",
             "mssql://localhost/db?encrypt=true&trust_server_certificate_ca=ca.pem",
             "mssql://host%5C/db?encrypt=true",
+            "mssql://localhost/db?encrypt=true&trusted_connection=true",
         ] {
             assert!(matches!(
                 mssql_config(&Url::parse(uri).unwrap()),

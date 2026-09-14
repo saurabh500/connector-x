@@ -1,10 +1,9 @@
-//! Explicit bridge-backed SQL Server source. Ordinary routing still uses Tiberius.
+//! SQL Server compatibility source using ordinary bridge rows and metadata events.
 
 mod connection;
 mod conversion;
 mod errors;
 mod metadata;
-mod writer;
 
 pub use crate::sources::mssql::{FloatN, IntN, MsSQLTypeSystem};
 use crate::{
@@ -13,50 +12,38 @@ use crate::{
     errors::ConnectorXError,
     sources::{PartitionParser, Produce, Source, SourcePartition},
     sql::{count_query, get_partition_range_query, CXQuery},
+    utils::DummyBox,
 };
 use anyhow::anyhow;
 use bb8::{Pool, PooledConnection};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 pub use connection::{mssql_config, ConnectionManager};
-use conversion::{FromValue, Value};
+use conversion::FromRow;
 pub use errors::MsSQLBridgeSourceError;
-use mssql_tiberius_bridge::{
-    writer::{ColumnMetadata, RowWriter, TdsDataType},
-    Client,
-};
+use futures::StreamExt;
+use mssql_tiberius_bridge::{Client, Column, ColumnType, QueryItem, QueryStream, Row};
+use owning_ref::OwningHandle;
 use rust_decimal::Decimal;
 use sqlparser::dialect::MsSqlDialect;
 use std::{convert::TryFrom, sync::Arc};
 use tokio::runtime::{Handle, Runtime};
 use url::Url;
 use uuid_old::Uuid;
-use writer::ValueWriter;
 
 type Result<T> = std::result::Result<T, MsSQLBridgeSourceError>;
+type Conn<'a> = PooledConnection<'a, ConnectionManager>;
 
-#[derive(Clone, Debug, PartialEq)]
-struct ColumnSignature {
-    name: String,
-    ty: TdsDataType,
-    nullable: bool,
-    precision: Option<u8>,
-    scale: Option<u8>,
-}
-
-impl From<&ColumnMetadata> for ColumnSignature {
-    fn from(col: &ColumnMetadata) -> Self {
-        Self {
-            name: col.column_name.clone(),
-            ty: col.data_type,
-            nullable: col.is_nullable(),
-            precision: col.get_precision(),
-            scale: col.get_scale(),
-        }
-    }
-}
-
-fn check_schema(actual: &[ColumnSignature], expected: &[ColumnSignature]) -> Result<()> {
-    if actual != expected {
+fn check_schema(actual: &[Column], expected: &[Column]) -> Result<()> {
+    let same = actual.len() == expected.len()
+        && actual.iter().zip(expected).all(|(a, b)| {
+            a.name() == b.name()
+                && a.column_type() == b.column_type()
+                && a.nullable() == b.nullable()
+                && a.byte_length() == b.byte_length()
+                && a.precision() == b.precision()
+                && a.scale() == b.scale()
+        });
+    if !same {
         return Err(MsSQLBridgeSourceError::Conversion(
             "result-set schema changed during SQL Server read".into(),
         ));
@@ -69,7 +56,7 @@ pub struct MsSQLBridgeSource {
     pool: Pool<ConnectionManager>,
     origin_query: Option<String>,
     queries: Vec<CXQuery<String>>,
-    columns: Vec<ColumnSignature>,
+    columns: Vec<Column>,
     schema: Vec<MsSQLTypeSystem>,
 }
 
@@ -94,28 +81,27 @@ impl MsSQLBridgeSource {
 
 async fn count_rows(conn: &mut Client, query: &str) -> Result<usize> {
     let row = conn
-        .query_first(query, &[])
+        .query(query, &[])
+        .await?
+        .into_row()
         .await?
         .ok_or(MsSQLBridgeSourceError::GetNRowsFailed)?;
-    let n = row
-        .try_get::<i32, _>(0usize)?
-        .ok_or(MsSQLBridgeSourceError::GetNRowsFailed)?;
+    let n = i32::from_row(&row, 0)?.ok_or(MsSQLBridgeSourceError::GetNRowsFailed)?;
     usize::try_from(n).map_err(|_| MsSQLBridgeSourceError::GetNRowsFailed)
 }
 
-/// Explicit bridge range discovery; the existing public partition route is unchanged.
 pub fn get_partition_range(conn: &Url, query: &str, col: &str) -> Result<(i64, i64)> {
     let rt = Runtime::new().map_err(anyhow::Error::from)?;
     let config = mssql_config(conn)?;
-    let query =
-        get_partition_range_query(query, col, &MsSqlDialect {}).map_err(ConnectorXError::from)?;
+    let query = get_partition_range_query(query, col, &MsSqlDialect {})?;
     rt.block_on(async {
         let mut client = Client::connect(&config).await?;
         let row = client
-            .query_first(query.as_str(), &[])
+            .query(query.as_str(), &[])
+            .await?
+            .into_row()
             .await?
             .ok_or_else(|| anyhow!("SQL Server returned no partition range"))?;
-        use mssql_tiberius_bridge::ColumnType;
         let ty = row
             .columns()
             .first()
@@ -160,41 +146,39 @@ impl Source for MsSQLBridgeSource {
     fn set_origin_query(&mut self, query: Option<String>) {
         self.origin_query = query;
     }
-
     fn fetch_metadata(&mut self) -> Result<()> {
+        log::debug!(target: "connectorx::mssql_backend", "MSSQL metadata backend: mssql-tds");
         let query = self
             .queries
             .first()
             .ok_or_else(|| anyhow!("SQL Server requires a query"))?;
         let mut conn = self.rt.block_on(self.pool.get())?;
-        let (columns, schema) = self.rt.block_on(async {
-            if !conn.start_query(query.as_str(), &[]).await? {
-                return Err(anyhow!("SQL Server returned no columns").into());
-            }
-            let mapped = (|| {
-                let metadata = conn.query_metadata()?;
-                if metadata.is_empty() {
-                    return Err(anyhow!("SQL Server returned no columns").into());
+        let columns = self.rt.block_on(async {
+            let mut stream = conn.query(query.as_str(), &[]).await?;
+            let columns = stream
+                .columns()
+                .await?
+                .filter(|columns| !columns.is_empty())
+                .ok_or_else(|| anyhow!("SQL Server returned no columns"))?
+                .to_vec();
+            while let Some(item) = stream.next().await {
+                if let QueryItem::Metadata(metadata) = item? {
+                    check_schema(metadata.columns(), &columns)?;
                 }
-                let columns = metadata.iter().map(ColumnSignature::from).collect();
-                let schema = metadata
-                    .iter()
-                    .map(MsSQLTypeSystem::try_from)
-                    .collect::<Result<Vec<_>>>()?;
-                Ok::<_, MsSQLBridgeSourceError>((columns, schema))
-            })();
-            let closed = conn.close_query().await;
-            let metadata = mapped?;
-            closed?;
-            Ok::<_, MsSQLBridgeSourceError>(metadata)
+            }
+            Ok::<_, MsSQLBridgeSourceError>(columns)
         })?;
+        self.schema = columns
+            .iter()
+            .map(MsSQLTypeSystem::try_from)
+            .collect::<Result<_>>()?;
         self.columns = columns;
-        self.schema = schema;
         Ok(())
     }
     fn result_rows(&mut self) -> Result<Option<usize>> {
         match &self.origin_query {
             Some(q) => {
+                log::debug!(target: "connectorx::mssql_backend", "MSSQL count backend: mssql-tds");
                 let query = count_query(&CXQuery::Naked(q.clone()), &MsSqlDialect {})?;
                 let mut conn = self.rt.block_on(self.pool.get())?;
                 Ok(Some(
@@ -205,7 +189,7 @@ impl Source for MsSQLBridgeSource {
         }
     }
     fn names(&self) -> Vec<String> {
-        self.columns.iter().map(|c| c.name.clone()).collect()
+        self.columns.iter().map(|c| c.name().to_owned()).collect()
     }
     fn schema(&self) -> Vec<MsSQLTypeSystem> {
         self.schema.clone()
@@ -235,7 +219,7 @@ pub struct MsSQLBridgeSourcePartition {
     pool: Pool<ConnectionManager>,
     rt: Arc<Runtime>,
     query: CXQuery<String>,
-    columns: Vec<ColumnSignature>,
+    columns: Vec<Column>,
     nrows: usize,
 }
 
@@ -243,29 +227,32 @@ impl SourcePartition for MsSQLBridgeSourcePartition {
     type TypeSystem = MsSQLTypeSystem;
     type Parser<'a> = MsSQLBridgeSourceParser<'a>;
     type Error = MsSQLBridgeSourceError;
-
     fn result_rows(&mut self) -> Result<()> {
+        log::debug!(target: "connectorx::mssql_backend", "MSSQL partition count backend: mssql-tds");
         let query = count_query(&self.query, &MsSqlDialect {})?;
         let mut conn = self.rt.block_on(self.pool.get())?;
         self.nrows = self.rt.block_on(count_rows(&mut conn, query.as_str()))?;
         Ok(())
     }
     fn parser(&mut self) -> Result<Self::Parser<'_>> {
-        let mut conn = self.rt.block_on(self.pool.get())?;
-        if !self
-            .rt
-            .block_on(conn.start_query(self.query.as_str(), &[]))?
-        {
-            return Err(anyhow!("SQL Server returned no columns").into());
-        }
-        check_schema(&conn.query_schema()?, &self.columns)?;
+        log::debug!(target: "connectorx::mssql_backend", "MSSQL partition backend: mssql-tds");
+        let conn = self.rt.block_on(self.pool.get())?;
+        // As in the legacy source, the stable boxed owner outlives its borrowing stream.
+        let items = OwningHandle::try_new(Box::new(conn), |conn: *const Conn<'_>| unsafe {
+            let conn = &mut *(conn as *mut Conn<'_>);
+            self.rt
+                .block_on(conn.query(self.query.as_str(), &[]))
+                .map(DummyBox)
+        })?;
         Ok(MsSQLBridgeSourceParser {
             rt: self.rt.handle(),
-            conn,
+            items,
             columns: &self.columns,
-            batch: Batch::default(),
+            rowbuf: Vec::with_capacity(DB_BUFFER_SIZE),
             current_row: 0,
             current_col: 0,
+            finished: false,
+            failure: None,
         })
     }
     fn nrows(&self) -> usize {
@@ -276,133 +263,70 @@ impl SourcePartition for MsSQLBridgeSourcePartition {
     }
 }
 
-// A narrow seam for testing refill boundaries without simulating SQL or the wire protocol.
-trait QueryRows {
-    async fn read<W: RowWriter + Send>(
-        &mut self,
-        writer: &mut W,
-    ) -> mssql_tiberius_bridge::Result<bool>;
-    async fn advance(&mut self) -> mssql_tiberius_bridge::Result<bool>;
-    fn query_schema(&self) -> Result<Vec<ColumnSignature>>;
-}
-
-impl QueryRows for Client {
-    async fn read<W: RowWriter + Send>(
-        &mut self,
-        writer: &mut W,
-    ) -> mssql_tiberius_bridge::Result<bool> {
-        self.next_row_into(writer).await
-    }
-    async fn advance(&mut self) -> mssql_tiberius_bridge::Result<bool> {
-        self.next_result().await
-    }
-    fn query_schema(&self) -> Result<Vec<ColumnSignature>> {
-        Ok(self
-            .query_metadata()?
-            .iter()
-            .map(ColumnSignature::from)
-            .collect())
-    }
-}
-
-#[derive(Default)]
-struct Batch {
-    rows: Vec<Vec<Value>>,
-    len: usize,
+pub struct MsSQLBridgeSourceParser<'a> {
+    rt: &'a Handle,
+    items: OwningHandle<Box<Conn<'a>>, DummyBox<QueryStream<'a>>>,
+    columns: &'a [Column],
+    rowbuf: Vec<Row>,
+    current_row: usize,
+    current_col: usize,
     finished: bool,
     failure: Option<String>,
 }
 
-impl Batch {
-    async fn refill<R: QueryRows>(
-        &mut self,
-        rows: &mut R,
-        schema: &[ColumnSignature],
-    ) -> Result<()> {
-        if let Some(error) = &self.failure {
-            return Err(MsSQLBridgeSourceError::Conversion(format!(
-                "SQL Server read already failed: {error}"
-            )));
-        }
-        self.len = 0;
-        if self.finished {
-            return Ok(());
-        }
-        let fetched = self.read_batch(rows, schema).await;
-        if let Err(error) = &fetched {
-            self.rows.clear();
-            self.len = 0;
-            self.failure = Some(error.to_string());
-        }
-        fetched
-    }
-
-    async fn read_batch<R: QueryRows>(
-        &mut self,
-        rows: &mut R,
-        schema: &[ColumnSignature],
-    ) -> Result<()> {
-        for index in 0..DB_BUFFER_SIZE {
-            if self.rows.len() == index {
-                self.rows.push(Vec::with_capacity(schema.len()));
-            }
-            loop {
-                let mut writer = ValueWriter::new(&mut self.rows[index], schema.len());
-                let result = rows.read(&mut writer).await;
-                if writer.finish(result)? {
-                    break;
-                }
-                if !rows.advance().await? {
-                    self.finished = true;
-                    return Ok(());
-                }
-                check_schema(&rows.query_schema()?, schema)?;
-            }
-            self.len += 1;
-        }
-        Ok(())
-    }
-}
-
-pub struct MsSQLBridgeSourceParser<'a> {
-    rt: &'a Handle,
-    conn: PooledConnection<'a, ConnectionManager>,
-    columns: &'a [ColumnSignature],
-    batch: Batch,
-    current_col: usize,
-    current_row: usize,
-}
-
 impl MsSQLBridgeSourceParser<'_> {
     fn next_loc(&mut self) -> Result<(usize, usize)> {
-        if self.columns.is_empty() || self.current_row >= self.batch.len {
+        if self.columns.is_empty() || self.current_row >= self.rowbuf.len() {
             return Err(anyhow!("SQL Server parser has no buffered value").into());
         }
-        let ret = (self.current_row, self.current_col);
+        let location = (self.current_row, self.current_col);
         self.current_row += (self.current_col + 1) / self.columns.len();
         self.current_col = (self.current_col + 1) % self.columns.len();
-        Ok(ret)
+        Ok(location)
+    }
+    fn refill(&mut self) -> Result<()> {
+        self.rowbuf.clear();
+        self.current_row = 0;
+        // Preserve the legacy source's bounded item loop and per-item runtime entry.
+        for _ in 0..DB_BUFFER_SIZE {
+            match self.rt.block_on(self.items.next()).transpose()? {
+                Some(QueryItem::Metadata(metadata)) => {
+                    check_schema(metadata.columns(), self.columns)?
+                }
+                Some(QueryItem::Row(row)) => self.rowbuf.push(row),
+                None => {
+                    self.finished = true;
+                    break;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
 impl<'a> PartitionParser<'a> for MsSQLBridgeSourceParser<'a> {
     type TypeSystem = MsSQLTypeSystem;
     type Error = MsSQLBridgeSourceError;
-
     fn fetch_next(&mut self) -> Result<(usize, bool)> {
+        if let Some(error) = &self.failure {
+            return Err(anyhow!("SQL Server read already failed: {error}").into());
+        }
         if self.current_col != 0 {
             return Err(anyhow!("SQL Server refill requires a fully consumed row").into());
         }
-        let remaining = self.batch.len - self.current_row;
+        let remaining = self.rowbuf.len() - self.current_row;
         if remaining > 0 {
-            return Ok((remaining, self.batch.finished));
+            return Ok((remaining, self.finished));
         }
-        let result = self
-            .rt
-            .block_on(self.batch.refill(&mut *self.conn, self.columns));
-        self.current_row = 0;
-        result?;
-        Ok((self.batch.len, self.batch.finished))
+        if self.finished {
+            return Ok((0, true));
+        }
+        if let Err(error) = self.refill() {
+            self.rowbuf.clear();
+            self.failure = Some(error.to_string());
+            return Err(error);
+        }
+        Ok((self.rowbuf.len(), self.finished))
     }
 }
 
@@ -412,20 +336,18 @@ macro_rules! impl_produce {
             type Error = MsSQLBridgeSourceError;
             fn produce(&'r mut self) -> Result<$t> {
                 let (row, col) = self.next_loc()?;
-                <$t>::from_value(&self.batch.rows[row][col])?
-                    .ok_or_else(|| anyhow!("SQL Server NULL at non-nullable position ({row}, {col})").into())
+                <$t>::from_row(&self.rowbuf[row], col)?.ok_or_else(|| anyhow!("SQL Server NULL at non-nullable position ({row}, {col})").into())
             }
         }
         impl<'r, 'a> Produce<'r, Option<$t>> for MsSQLBridgeSourceParser<'a> {
             type Error = MsSQLBridgeSourceError;
             fn produce(&'r mut self) -> Result<Option<$t>> {
                 let (row, col) = self.next_loc()?;
-                <$t>::from_value(&self.batch.rows[row][col])
+                <$t>::from_row(&self.rowbuf[row], col)
             }
         }
     )+};
 }
-
 impl_produce!(
     u8,
     i16,

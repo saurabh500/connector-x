@@ -1,7 +1,8 @@
 use crate::errors::ConnectorXPythonError;
 use anyhow::anyhow;
 use arrow::record_batch::RecordBatch;
-use connectorx::source_router::SourceConn;
+use connectorx::get_arrow::{get_arrow_resolved, new_record_batch_iter_resolved};
+use connectorx::source_router::ResolvedSource;
 use connectorx::{prelude::*, sql::CXQuery};
 use fehler::throws;
 use libc::uintptr_t;
@@ -81,14 +82,15 @@ impl PyRecordBatchIterator {
 #[throws(ConnectorXPythonError)]
 pub fn write_arrow<'py>(
     py: Python<'py>,
-    source_conn: &SourceConn,
+    resolved: &ResolvedSource,
     origin_query: Option<String>,
     queries: &[CXQuery<String>],
     pre_execution_queries: Option<&[String]>,
 ) -> Bound<'py, PyAny> {
     let ptrs = py.detach(
         || -> Result<(Vec<String>, Vec<Vec<(uintptr_t, uintptr_t)>>), ConnectorXPythonError> {
-            let destination = get_arrow(source_conn, origin_query, queries, pre_execution_queries)?;
+            let destination =
+                get_arrow_resolved(resolved, origin_query, queries, pre_execution_queries)?;
             let rbs = destination.arrow()?;
             Ok(to_ptrs(rbs))
         },
@@ -100,19 +102,19 @@ pub fn write_arrow<'py>(
 #[throws(ConnectorXPythonError)]
 pub fn get_arrow_rb_iter<'py>(
     py: Python<'py>,
-    source_conn: &SourceConn,
+    resolved: &ResolvedSource,
     origin_query: Option<String>,
     queries: &[CXQuery<String>],
     pre_execution_queries: Option<&[String]>,
     batch_size: usize,
 ) -> Bound<'py, PyAny> {
-    let mut arrow_iter: Box<dyn RecordBatchIterator> = new_record_batch_iter(
-        source_conn,
+    let mut arrow_iter: Box<dyn RecordBatchIterator> = new_record_batch_iter_resolved(
+        resolved,
         origin_query,
         queries,
         batch_size,
         pre_execution_queries,
-    );
+    )?;
 
     arrow_iter.prepare();
     let py_rb_iter = PyRecordBatchIterator(unsafe {

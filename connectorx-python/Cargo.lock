@@ -2868,7 +2868,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "778e2ac28f6c47af28e4907f13ffd1e1ddbd400980a9abd7c8df189bf578a5ad"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4337,7 +4337,7 @@ dependencies = [
 [[package]]
 name = "mssql-tiberius-bridge"
 version = "0.1.0"
-source = "git+https://github.com/saurabh500/mssql-tiberius-bridge?rev=d2e91bd4d75891acefe865c1a28c60abafab2bf4#d2e91bd4d75891acefe865c1a28c60abafab2bf4"
+source = "git+https://github.com/saurabh500/mssql-tiberius-bridge?rev=1f74ea89da85dc4ea08498c521f8b070cc9cc484#1f74ea89da85dc4ea08498c521f8b070cc9cc484"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -5702,7 +5702,7 @@ dependencies = [
  "once_cell",
  "socket2 0.5.10",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5977,7 +5977,7 @@ dependencies = [
  "aws-credential-types",
  "aws-sdk-redshift",
  "aws-sdk-sts",
- "base64 0.22.1",
+ "base64 0.21.7",
  "log",
  "regex",
  "reqwest 0.12.22",
@@ -6263,7 +6263,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6276,7 +6276,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.9.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6771,7 +6771,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "psm",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7020,7 +7020,7 @@ dependencies = [
  "getrandom 0.3.3",
  "once_cell",
  "rustix 1.0.8",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7530,7 +7530,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
 dependencies = [
  "cfg-if",
- "rand 0.8.5",
+ "rand 0.7.3",
  "static_assertions",
 ]
 

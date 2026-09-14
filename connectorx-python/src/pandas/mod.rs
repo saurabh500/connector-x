@@ -15,8 +15,9 @@ pub use self::transports::{
 };
 pub use self::typesystem::{PandasDType, PandasTypeSystem};
 use crate::errors::ConnectorXPythonError;
-use connectorx::source_router::{SourceConn, SourceType};
+use connectorx::source_router::{MsSQLBackend, ResolvedSource, SourceType};
 use connectorx::sources::clickhouse::ClickHouseSource;
+use connectorx::sources::mssql_bridge::MsSQLBridgeSource;
 use connectorx::sources::oracle::OracleSource;
 use connectorx::{
     prelude::*,
@@ -39,11 +40,12 @@ use std::sync::Arc;
 #[throws(ConnectorXPythonError)]
 pub fn write_pandas<'a, 'py: 'a>(
     py: Python<'py>,
-    source_conn: &SourceConn,
+    resolved: &ResolvedSource,
     origin_query: Option<String>,
     queries: &[CXQuery<String>],
     pre_execution_queries: Option<&[String]>,
 ) -> Bound<'py, PyAny> {
+    let source_conn = resolved.source();
     let destination = PandasDestination::new();
     let protocol = source_conn.proto.as_str();
     debug!("Protocol: {}", protocol);
@@ -204,15 +206,29 @@ pub fn write_pandas<'a, 'py: 'a>(
             _ => unimplemented!("{} protocol not supported", protocol),
         },
         SourceType::MsSQL => {
-            let rt = Arc::new(tokio::runtime::Runtime::new().expect("Failed to create runtime"));
-            let source = MsSQLSource::new(rt, &source_conn.conn[..], queries.len())?;
-            let dispatcher = PandasDispatcher::<_, MsSQLPandasTransport>::new(
-                source,
-                destination,
-                queries,
-                origin_query,
-            );
-            dispatcher.run(py)?
+            let rt = Arc::new(tokio::runtime::Runtime::new().map_err(anyhow::Error::from)?);
+            match resolved.mssql_backend() {
+                MsSQLBackend::Tiberius => {
+                    let source = MsSQLSource::new(rt, &source_conn.conn[..], queries.len())?;
+                    PandasDispatcher::<_, MsSQLPandasTransport>::new(
+                        source,
+                        destination,
+                        queries,
+                        origin_query,
+                    )
+                    .run(py)?
+                }
+                MsSQLBackend::MssqlTds => {
+                    let source = MsSQLBridgeSource::new(rt, &source_conn.conn[..], queries.len())?;
+                    PandasDispatcher::<_, MsSQLBridgePandasTransport>::new(
+                        source,
+                        destination,
+                        queries,
+                        origin_query,
+                    )
+                    .run(py)?
+                }
+            }
         }
         SourceType::Oracle => {
             let source = OracleSource::new(&source_conn.conn[..], queries.len())?;
