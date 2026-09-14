@@ -297,6 +297,7 @@ fn live_both_arrow_bindings_preserve_decimal_output() {
     };
     use crate::prelude::Dispatcher;
     use crate::transports::{MsSQLBridgeArrowStreamTransport, MsSQLBridgeArrowTransport};
+    use arrow::{array::Decimal128Array, datatypes::DataType};
     let uri = std::env::var("MSSQL_URL").expect("supply MSSQL_URL explicitly");
     let query = [CXQuery::naked(
         "SELECT CAST(1.25 AS decimal(10,2)) AS amount",
@@ -316,12 +317,28 @@ fn live_both_arrow_bindings_preserve_decimal_output() {
     )
     .unwrap();
     stream.prepare();
-    let streamed = stream.next_batch().unwrap();
-    assert_eq!(streamed.num_rows(), 1);
-    assert_eq!(materialized[0].schema(), streamed.schema());
-    assert_eq!(
-        materialized[0].column(0).to_data(),
-        streamed.column(0).to_data()
-    );
+    let streamed: Vec<_> = std::iter::from_fn(|| stream.next_batch()).collect();
+    let schema = materialized[0].schema();
+    assert_eq!(schema.fields().len(), 1);
+    assert_eq!(schema.field(0).name(), "amount");
+    assert_eq!(schema.field(0).data_type(), &DataType::Decimal128(38, 10));
+    // Finalizing an exact-full stream batch can emit a valid empty batch.
+    for batches in [&materialized, &streamed] {
+        let mut values = vec![];
+        let mut total_rows = 0;
+        for batch in batches {
+            assert_eq!(batch.schema(), schema);
+            total_rows += batch.num_rows();
+            let decimals = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Decimal128Array>()
+                .unwrap();
+            values.extend(decimals.iter());
+        }
+        assert_eq!(total_rows, 1);
+        assert_eq!(values, [Some(12_500_000_000)]);
+    }
+    assert!(stream.next_batch().is_none());
     assert!(stream.next_batch().is_none());
 }
