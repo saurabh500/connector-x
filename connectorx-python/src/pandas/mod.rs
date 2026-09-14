@@ -9,8 +9,9 @@ mod typesystem;
 pub use self::destination::{PandasBlockInfo, PandasDestination, PandasPartitionDestination};
 use self::dispatcher::PandasDispatcher;
 pub use self::transports::{
-    BigQueryPandasTransport, ClickHousePandasTransport, MsSQLPandasTransport, MysqlPandasTransport,
-    OraclePandasTransport, PostgresPandasTransport, SqlitePandasTransport, TrinoPandasTransport,
+    BigQueryPandasTransport, ClickHousePandasTransport, MsSQLBridgePandasTransport,
+    MsSQLPandasTransport, MysqlPandasTransport, OraclePandasTransport, PostgresPandasTransport,
+    SqlitePandasTransport, TrinoPandasTransport,
 };
 pub use self::typesystem::{PandasDType, PandasTypeSystem};
 use crate::errors::ConnectorXPythonError;

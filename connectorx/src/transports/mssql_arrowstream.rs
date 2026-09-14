@@ -14,6 +14,17 @@ use uuid_old::Uuid;
 
 /// Convert MsSQL data types to Arrow data types.
 pub struct MsSQLArrowTransport;
+pub struct MsSQLBridgeArrowTransport;
+
+#[derive(Error, Debug)]
+pub enum MsSQLBridgeArrowTransportError {
+    #[error(transparent)]
+    Source(#[from] crate::sources::mssql_bridge::MsSQLBridgeSourceError),
+    #[error(transparent)]
+    Destination(#[from] ArrowDestinationError),
+    #[error(transparent)]
+    ConnectorX(#[from] crate::errors::ConnectorXError),
+}
 
 #[derive(Error, Debug)]
 pub enum MsSQLArrowTransportError {
@@ -27,11 +38,13 @@ pub enum MsSQLArrowTransportError {
     ConnectorX(#[from] crate::errors::ConnectorXError),
 }
 
+macro_rules! bind_mssql_arrow {
+    ($transport:ident, $source:ty, $error:ty) => {
 impl_transport!(
-    name = MsSQLArrowTransport,
-    error = MsSQLArrowTransportError,
+    name = $transport,
+    error = $error,
     systems = MsSQLTypeSystem => ArrowTypeSystem,
-    route = MsSQLSource => ArrowDestination,
+    route = $source => ArrowDestination,
     mappings = {
         { Tinyint[u8]                   => Int64[i64]                | conversion auto }
         { Smallint[i16]                 => Int64[i64]                | conversion auto }
@@ -65,45 +78,54 @@ impl_transport!(
     }
 );
 
-impl TypeConversion<Uuid, String> for MsSQLArrowTransport {
+impl TypeConversion<Uuid, String> for $transport {
     fn convert(val: Uuid) -> String {
         val.to_string()
     }
 }
 
-impl TypeConversion<IntN, i64> for MsSQLArrowTransport {
+impl TypeConversion<IntN, i64> for $transport {
     fn convert(val: IntN) -> i64 {
         val.0
     }
 }
 
-impl TypeConversion<FloatN, f64> for MsSQLArrowTransport {
+impl TypeConversion<FloatN, f64> for $transport {
     fn convert(val: FloatN) -> f64 {
         val.0
     }
 }
 
-impl TypeConversion<Decimal, f64> for MsSQLArrowTransport {
+impl TypeConversion<Decimal, f64> for $transport {
     fn convert(val: Decimal) -> f64 {
         val.to_f64()
             .unwrap_or_else(|| panic!("cannot convert decimal {:?} to float64", val))
     }
 }
 
-impl TypeConversion<NaiveDateTime, NaiveDateTimeWrapperMicro> for MsSQLArrowTransport {
+impl TypeConversion<NaiveDateTime, NaiveDateTimeWrapperMicro> for $transport {
     fn convert(val: NaiveDateTime) -> NaiveDateTimeWrapperMicro {
         NaiveDateTimeWrapperMicro(val)
     }
 }
 
-impl TypeConversion<NaiveTime, NaiveTimeWrapperMicro> for MsSQLArrowTransport {
+impl TypeConversion<NaiveTime, NaiveTimeWrapperMicro> for $transport {
     fn convert(val: NaiveTime) -> NaiveTimeWrapperMicro {
         NaiveTimeWrapperMicro(val)
     }
 }
 
-impl TypeConversion<DateTime<Utc>, DateTimeWrapperMicro> for MsSQLArrowTransport {
+impl TypeConversion<DateTime<Utc>, DateTimeWrapperMicro> for $transport {
     fn convert(val: DateTime<Utc>) -> DateTimeWrapperMicro {
         DateTimeWrapperMicro(val)
     }
 }
+    };
+}
+
+bind_mssql_arrow!(MsSQLArrowTransport, MsSQLSource, MsSQLArrowTransportError);
+bind_mssql_arrow!(
+    MsSQLBridgeArrowTransport,
+    crate::sources::mssql_bridge::MsSQLBridgeSource,
+    MsSQLBridgeArrowTransportError
+);

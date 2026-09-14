@@ -11,6 +11,8 @@ pub mod csv;
 pub mod dummy;
 #[cfg(feature = "src_mssql")]
 pub mod mssql;
+#[cfg(feature = "src_mssql")]
+pub mod mssql_bridge;
 #[cfg(feature = "src_mysql")]
 pub mod mysql;
 #[cfg(feature = "src_oracle")]

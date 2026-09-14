@@ -31,6 +31,8 @@ polars = { workspace = true, optional = true, features = [
 polars-arrow = { workspace = true, optional = true }
 bb8 = { version = "0.7", optional = true }
 bb8-tiberius = { version = "0.8", optional = true }
+async-trait = { version = "0.1", optional = true }
+mssql-tiberius-bridge = { git = "https://github.com/saurabh500/mssql-tiberius-bridge", rev = "d2e91bd4d75891acefe865c1a28c60abafab2bf4", default-features = false, optional = true }
 csv = { version = "1", optional = true }
 fallible-streaming-iterator = { version = "0.1", optional = true }
 futures = { version = "0.3", optional = true }
@@ -95,6 +97,9 @@ rustc-hash = { version = "2.1.1", optional = true }
 crate-type = ["cdylib", "rlib"]
 name = "connectorx"
 
+[target.'cfg(windows)'.dependencies]
+mssql-tiberius-bridge = { git = "https://github.com/saurabh500/mssql-tiberius-bridge", rev = "d2e91bd4d75891acefe865c1a28c60abafab2bf4", default-features = false, optional = true, features = ["sspi", "tls-schannel-direct-on-windows"] }
+
 [dev-dependencies]
 criterion = "0.3"
 env_logger = "0.11"
@@ -129,6 +134,8 @@ src_bigquery = ["gcp-bigquery-client", "tokio"]
 src_csv = ["csv", "regex"]
 src_dummy = ["num-traits"]
 src_mssql = [
+  "mssql-tiberius-bridge",
+  "async-trait",
   "rust_decimal",
   "num-traits",
   "tiberius",
@@ -189,7 +196,7 @@ src_clickhouse = [
 ]
 federation = ["j4rs"]
 fed_exec = ["datafusion", "tokio"]
-integrated-auth-gssapi = ["tiberius/integrated-auth-gssapi"]
+integrated-auth-gssapi = ["tiberius/integrated-auth-gssapi", "mssql-tiberius-bridge/gssapi"]
 
 [package.metadata.docs.rs]
 features = ["all"]

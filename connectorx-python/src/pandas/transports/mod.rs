@@ -10,7 +10,7 @@ mod trino;
 pub use self::postgres::PostgresPandasTransport;
 pub use bigquery::BigQueryPandasTransport;
 pub use clickhouse::ClickHousePandasTransport;
-pub use mssql::MsSQLPandasTransport;
+pub use mssql::{MsSQLBridgePandasTransport, MsSQLPandasTransport};
 pub use mysql::MysqlPandasTransport;
 pub use oracle::OraclePandasTransport;
 pub use sqlite::SqlitePandasTransport;

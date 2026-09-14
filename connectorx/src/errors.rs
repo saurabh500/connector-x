@@ -56,6 +56,10 @@ pub enum ConnectorXOutError {
 
     #[cfg(feature = "src_mssql")]
     #[error(transparent)]
+    MsSQLBridgeSourceError(#[from] crate::sources::mssql_bridge::MsSQLBridgeSourceError),
+
+    #[cfg(feature = "src_mssql")]
+    #[error(transparent)]
     MsSQL(#[from] tiberius::error::Error),
 
     #[cfg(feature = "src_sqlite")]
@@ -109,6 +113,10 @@ pub enum ConnectorXOutError {
     #[cfg(all(feature = "src_mssql", feature = "dst_arrow"))]
     #[error(transparent)]
     MsSQLArrowTransportError(#[from] crate::transports::MsSQLArrowTransportError),
+
+    #[cfg(all(feature = "src_mssql", feature = "dst_arrow"))]
+    #[error(transparent)]
+    MsSQLBridgeArrowTransportError(#[from] crate::transports::MsSQLBridgeArrowTransportError),
 
     #[cfg(all(feature = "src_oracle", feature = "dst_arrow"))]
     #[error(transparent)]

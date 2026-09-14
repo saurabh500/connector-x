@@ -57,11 +57,16 @@ pub use csv_arrow::CSVArrowTransport;
 #[cfg(all(feature = "src_dummy", feature = "dst_arrow"))]
 pub use dummy_arrow::DummyArrowTransport;
 #[cfg(all(feature = "src_mssql", feature = "dst_arrow"))]
-pub use mssql_arrow::{MsSQLArrowTransport, MsSQLArrowTransportError};
+pub use mssql_arrow::{
+    MsSQLArrowTransport, MsSQLArrowTransportError, MsSQLBridgeArrowTransport,
+    MsSQLBridgeArrowTransportError,
+};
 #[cfg(all(feature = "src_mssql", feature = "dst_arrow"))]
 pub use mssql_arrowstream::{
     MsSQLArrowTransport as MsSQLArrowStreamTransport,
     MsSQLArrowTransportError as MsSQLArrowStreamTransportError,
+    MsSQLBridgeArrowTransport as MsSQLBridgeArrowStreamTransport,
+    MsSQLBridgeArrowTransportError as MsSQLBridgeArrowStreamTransportError,
 };
 #[cfg(all(feature = "src_mysql", feature = "dst_arrow"))]
 pub use mysql_arrow::{MySQLArrowTransport, MySQLArrowTransportError};

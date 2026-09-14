@@ -14,12 +14,16 @@ use uuid_old::Uuid;
 
 #[allow(dead_code)]
 pub struct MsSQLPandasTransport<'py>(&'py ());
+#[allow(dead_code)]
+pub struct MsSQLBridgePandasTransport<'py>(&'py ());
 
+macro_rules! bind_mssql_pandas {
+    ($transport:ident, $source:ty) => {
 impl_transport!(
-    name = MsSQLPandasTransport<'tp>,
+    name = $transport<'tp>,
     error = ConnectorXPythonError,
     systems = MsSQLTypeSystem => PandasTypeSystem,
-    route = MsSQLSource => PandasDestination<'tp>,
+    route = $source => PandasDestination<'tp>,
     mappings = {
         { Tinyint[u8]                   => I64[i64]                | conversion auto }
         { Smallint[i16]                 => I64[i64]                | conversion auto }
@@ -53,25 +57,25 @@ impl_transport!(
     }
 );
 
-impl<'py> TypeConversion<IntN, i64> for MsSQLPandasTransport<'py> {
+impl<'py> TypeConversion<IntN, i64> for $transport<'py> {
     fn convert(val: IntN) -> i64 {
         val.0
     }
 }
 
-impl<'py> TypeConversion<FloatN, f64> for MsSQLPandasTransport<'py> {
+impl<'py> TypeConversion<FloatN, f64> for $transport<'py> {
     fn convert(val: FloatN) -> f64 {
         val.0
     }
 }
 
-impl<'py> TypeConversion<NaiveDateTime, DateTimeWrapperMicro> for MsSQLPandasTransport<'py> {
+impl<'py> TypeConversion<NaiveDateTime, DateTimeWrapperMicro> for $transport<'py> {
     fn convert(val: NaiveDateTime) -> DateTimeWrapperMicro {
         DateTimeWrapperMicro(DateTime::from_naive_utc_and_offset(val, Utc))
     }
 }
 
-impl<'py> TypeConversion<NaiveDate, DateTimeWrapperMicro> for MsSQLPandasTransport<'py> {
+impl<'py> TypeConversion<NaiveDate, DateTimeWrapperMicro> for $transport<'py> {
     fn convert(val: NaiveDate) -> DateTimeWrapperMicro {
         DateTimeWrapperMicro(DateTime::from_naive_utc_and_offset(
             val.and_hms_opt(0, 0, 0)
@@ -81,27 +85,65 @@ impl<'py> TypeConversion<NaiveDate, DateTimeWrapperMicro> for MsSQLPandasTranspo
     }
 }
 
-impl<'py> TypeConversion<DateTime<Utc>, DateTimeWrapperMicro> for MsSQLPandasTransport<'py> {
+impl<'py> TypeConversion<DateTime<Utc>, DateTimeWrapperMicro> for $transport<'py> {
     fn convert(val: DateTime<Utc>) -> DateTimeWrapperMicro {
         DateTimeWrapperMicro(val)
     }
 }
 
-impl<'py> TypeConversion<Uuid, String> for MsSQLPandasTransport<'py> {
+impl<'py> TypeConversion<Uuid, String> for $transport<'py> {
     fn convert(val: Uuid) -> String {
         val.to_string()
     }
 }
 
-impl<'py> TypeConversion<Decimal, f64> for MsSQLPandasTransport<'py> {
+impl<'py> TypeConversion<Decimal, f64> for $transport<'py> {
     fn convert(val: Decimal) -> f64 {
         val.to_f64()
             .unwrap_or_else(|| panic!("cannot convert decimal {:?} to float64", val))
     }
 }
 
-impl<'py> TypeConversion<NaiveTime, String> for MsSQLPandasTransport<'py> {
+impl<'py> TypeConversion<NaiveTime, String> for $transport<'py> {
     fn convert(val: NaiveTime) -> String {
         val.to_string()
+    }
+}
+    };
+}
+
+bind_mssql_pandas!(MsSQLPandasTransport, MsSQLSource);
+bind_mssql_pandas!(
+    MsSQLBridgePandasTransport,
+    connectorx::sources::mssql_bridge::MsSQLBridgeSource
+);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use connectorx::typesystem::Transport;
+
+    #[test]
+    fn both_sources_keep_the_same_pandas_value_conversions() {
+        fn legacy<T: Transport<S = MsSQLSource>>() {}
+        fn bridge<T: Transport<S = connectorx::sources::mssql_bridge::MsSQLBridgeSource>>() {}
+        legacy::<MsSQLPandasTransport<'static>>();
+        bridge::<MsSQLBridgePandasTransport<'static>>();
+        let id = Uuid::from_bytes([0xab; 16]);
+        assert_eq!(
+            <MsSQLPandasTransport as TypeConversion<Uuid, String>>::convert(id),
+            <MsSQLBridgePandasTransport as TypeConversion<Uuid, String>>::convert(id),
+        );
+        for value in [
+            Decimal::MIN,
+            Decimal::ZERO,
+            Decimal::MAX,
+            Decimal::new(123, 2),
+        ] {
+            assert_eq!(
+                <MsSQLPandasTransport as TypeConversion<Decimal, f64>>::convert(value),
+                <MsSQLBridgePandasTransport as TypeConversion<Decimal, f64>>::convert(value),
+            );
+        }
     }
 }

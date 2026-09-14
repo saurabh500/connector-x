@@ -54,6 +54,51 @@ cx.read_sql(conn, query)                                        # read data from
 | TIME            | object                      |                                    |
 | UNIQUEIDENTIFIER| object                      |                                    |
 
+### Experimental Rust bridge source
+
+The `src_mssql` feature also compiles
+`connectorx::sources::mssql_bridge::MsSQLBridgeSource`. This source must be
+constructed explicitly in Rust. Normal Python, Rust router, C++, partition,
+metadata, and Arrow streaming entrypoints still select the original Tiberius
+source. No environment selector or automatic fallback is implemented here.
+
+The bridge source uses the existing SQL Server type system and transport
+conversions. Explicit bindings are `MsSQLBridgeArrowTransport`,
+`MsSQLBridgeArrowStreamTransport`, and the Python crate's
+`pandas::MsSQLBridgePandasTransport`. Its `get_partition_range` helper is also
+explicit; it does not change the existing partition route.
+
+This fork pins the unreleased bridge revision
+`d2e91bd4d75891acefe865c1a28c60abafab2bf4` and depends on
+[bridge PR 124](https://github.com/saurabh500/mssql-tiberius-bridge/pull/124).
+Replace the git dependency with a released version before product shipping.
+ConnectorX depends only on the bridge, not directly on `mssql-tds`, and does not
+enable the bridge's Arrow feature.
+
+The experimental source requires explicit `encrypt=true` or `encrypt=false`.
+The latter can still negotiate TLS when required by the server. Missing or
+unrecognized encryption settings and `trust_server_certificate_ca` are errors:
+the native driver's login-only TLS mode and certificate pinning are not
+equivalents of the legacy unencrypted default and custom CA validation.
+URI values are decoded once. With a named instance, an explicit port takes
+precedence; without a port, SQL Browser resolves the instance.
+
+Native initial-connect retries and idle recovery are disabled with
+`connect_retry_count(0)`. Existing bb8 connection-attempt and replacement
+behavior is retained. ConnectorX does not replay failed SQL or switch backends
+after an error. Unread or dead connections are discarded by the pool, and
+checkout health checks query the server.
+
+Rows are read incrementally in 32-row refills, reusing owned storage. Result-set
+boundaries are explicit; incompatible column names, types, nullability,
+precision, or scale are errors, not silently flattened data. Failed refills
+discard partial rows and stay failed; EOF stays EOF. New-backend datetimeoffset
+conversion normalizes to UTC; the legacy Tiberius conversion is unchanged.
+No new performance claim is made by this integration.
+
+The ignored `sources::mssql_bridge::tests::live_*` Rust tests require an
+explicit `MSSQL_URL` and run read-only queries without creating fixtures.
+
 ### Performance (r5.4xlarge docker in another EC2 instance)
 
 **Modin does not support read_sql on Mssql**

@@ -28,6 +28,9 @@ pub enum ConnectorXPythonError {
     MsSQLSourceError(#[from] connectorx::sources::mssql::MsSQLSourceError),
 
     #[error(transparent)]
+    MsSQLBridgeSourceError(#[from] connectorx::sources::mssql_bridge::MsSQLBridgeSourceError),
+
+    #[error(transparent)]
     PostgresSourceError(#[from] connectorx::sources::postgres::PostgresSourceError),
 
     #[error(transparent)]
