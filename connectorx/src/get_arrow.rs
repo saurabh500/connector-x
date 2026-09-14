@@ -1,3 +1,8 @@
+#[cfg(feature = "src_mssql")]
+use crate::source_router::MsSQLBackend;
+use crate::source_router::ResolvedSource;
+#[cfg(feature = "src_mssql")]
+use crate::sources::mssql_bridge::MsSQLBridgeSource;
 #[cfg(feature = "src_mysql")]
 use crate::sources::mysql::{BinaryProtocol as MySQLBinaryProtocol, TextProtocol};
 #[cfg(feature = "src_postgres")]
@@ -27,6 +32,24 @@ pub fn get_arrow(
     queries: &[CXQuery<String>],
     pre_execution_queries: Option<&[String]>,
 ) -> ArrowDestination {
+    get_arrow_resolved(
+        &ResolvedSource::new(source_conn)?,
+        origin_query,
+        queries,
+        pre_execution_queries,
+    )?
+}
+
+#[doc(hidden)]
+#[allow(unreachable_code, unreachable_patterns, unused_variables, unused_mut)]
+#[throws(ConnectorXOutError)]
+pub fn get_arrow_resolved(
+    resolved: &ResolvedSource,
+    origin_query: Option<String>,
+    queries: &[CXQuery<String>],
+    pre_execution_queries: Option<&[String]>,
+) -> ArrowDestination {
+    let source_conn = resolved.source();
     let mut destination = ArrowDestination::new();
     let protocol = source_conn.proto.as_str();
     debug!("Protocol: {}", protocol);
@@ -204,15 +227,29 @@ pub fn get_arrow(
         }
         #[cfg(feature = "src_mssql")]
         SourceType::MsSQL => {
-            let rt = Arc::new(tokio::runtime::Runtime::new().expect("Failed to create runtime"));
-            let source = MsSQLSource::new(rt, &source_conn.conn[..], queries.len())?;
-            let dispatcher = Dispatcher::<_, _, MsSQLArrowTransport>::new(
-                source,
-                &mut destination,
-                queries,
-                origin_query,
-            );
-            dispatcher.run()?;
+            let rt = Arc::new(tokio::runtime::Runtime::new()?);
+            match resolved.mssql_backend() {
+                MsSQLBackend::Tiberius => {
+                    let source = MsSQLSource::new(rt, &source_conn.conn[..], queries.len())?;
+                    Dispatcher::<_, _, MsSQLArrowTransport>::new(
+                        source,
+                        &mut destination,
+                        queries,
+                        origin_query,
+                    )
+                    .run()?;
+                }
+                MsSQLBackend::MssqlTds => {
+                    let source = MsSQLBridgeSource::new(rt, &source_conn.conn[..], queries.len())?;
+                    Dispatcher::<_, _, MsSQLBridgeArrowTransport>::new(
+                        source,
+                        &mut destination,
+                        queries,
+                        origin_query,
+                    )
+                    .run()?;
+                }
+            }
         }
         #[cfg(feature = "src_oracle")]
         SourceType::Oracle => {
@@ -278,6 +315,45 @@ pub fn new_record_batch_iter(
     batch_size: usize,
     pre_execution_queries: Option<&[String]>,
 ) -> Box<dyn RecordBatchIterator> {
+    try_new_record_batch_iter(
+        source_conn,
+        origin_query,
+        queries,
+        batch_size,
+        pre_execution_queries,
+    )
+    .expect("Failed to construct record batch iterator")
+}
+
+/// Fallible construction; errors during iteration still follow RecordBatchIterator's
+/// legacy panic-based contract.
+#[throws(ConnectorXOutError)]
+pub fn try_new_record_batch_iter(
+    source_conn: &SourceConn,
+    origin_query: Option<String>,
+    queries: &[CXQuery<String>],
+    batch_size: usize,
+    pre_execution_queries: Option<&[String]>,
+) -> Box<dyn RecordBatchIterator> {
+    new_record_batch_iter_resolved(
+        &ResolvedSource::new(source_conn)?,
+        origin_query,
+        queries,
+        batch_size,
+        pre_execution_queries,
+    )?
+}
+
+#[doc(hidden)]
+#[allow(unreachable_code, unreachable_patterns, unused_variables, unused_mut)]
+pub fn new_record_batch_iter_resolved(
+    resolved: &ResolvedSource,
+    origin_query: Option<String>,
+    queries: &[CXQuery<String>],
+    batch_size: usize,
+    pre_execution_queries: Option<&[String]>,
+) -> Result<Box<dyn RecordBatchIterator>, ConnectorXOutError> {
+    let source_conn = resolved.source();
     let destination = ArrowStreamDestination::new_with_batch_size(batch_size);
     let protocol = source_conn.proto.as_str();
     debug!("Protocol: {}", protocol);
@@ -285,15 +361,14 @@ pub fn new_record_batch_iter(
     match source_conn.ty {
         #[cfg(feature = "src_postgres")]
         SourceType::Postgres => {
-            let (config, tls) = rewrite_tls_args(&source_conn.conn).unwrap();
+            let (config, tls) = rewrite_tls_args(&source_conn.conn)?;
             match (protocol, tls) {
                 ("csv", Some(tls_conn)) => {
                     let mut source = PostgresSource::<CSVProtocol, MakeTlsConnector>::new(
                         config,
                         tls_conn,
                         queries.len(),
-                    )
-                    .unwrap();
+                    )?;
 
                     source.set_pre_execution_queries(pre_execution_queries);
 
@@ -302,13 +377,12 @@ pub fn new_record_batch_iter(
                             _,
                             PostgresArrowStreamTransport<CSVProtocol, MakeTlsConnector>,
                         >::new(source, destination, origin_query, queries)
-                        .unwrap();
-                    return Box::new(batch_iter);
+                        .map_err(anyhow::Error::from)?;
+                    return Ok(Box::new(batch_iter));
                 }
                 ("csv", None) => {
                     let mut source =
-                        PostgresSource::<CSVProtocol, NoTls>::new(config, NoTls, queries.len())
-                            .unwrap();
+                        PostgresSource::<CSVProtocol, NoTls>::new(config, NoTls, queries.len())?;
 
                     source.set_pre_execution_queries(pre_execution_queries);
 
@@ -318,16 +392,15 @@ pub fn new_record_batch_iter(
                     >::new(
                         source, destination, origin_query, queries
                     )
-                    .unwrap();
-                    return Box::new(batch_iter);
+                    .map_err(anyhow::Error::from)?;
+                    return Ok(Box::new(batch_iter));
                 }
                 ("binary", Some(tls_conn)) => {
                     let mut source = PostgresSource::<PgBinaryProtocol, MakeTlsConnector>::new(
                         config,
                         tls_conn,
                         queries.len(),
-                    )
-                    .unwrap();
+                    )?;
 
                     source.set_pre_execution_queries(pre_execution_queries);
 
@@ -336,16 +409,15 @@ pub fn new_record_batch_iter(
                             _,
                             PostgresArrowStreamTransport<PgBinaryProtocol, MakeTlsConnector>,
                         >::new(source, destination, origin_query, queries)
-                        .unwrap();
-                    return Box::new(batch_iter);
+                        .map_err(anyhow::Error::from)?;
+                    return Ok(Box::new(batch_iter));
                 }
                 ("binary", None) => {
                     let mut source = PostgresSource::<PgBinaryProtocol, NoTls>::new(
                         config,
                         NoTls,
                         queries.len(),
-                    )
-                    .unwrap();
+                    )?;
 
                     source.set_pre_execution_queries(pre_execution_queries);
 
@@ -355,16 +427,15 @@ pub fn new_record_batch_iter(
                     >::new(
                         source, destination, origin_query, queries
                     )
-                    .unwrap();
-                    return Box::new(batch_iter);
+                    .map_err(anyhow::Error::from)?;
+                    return Ok(Box::new(batch_iter));
                 }
                 ("cursor", Some(tls_conn)) => {
                     let mut source = PostgresSource::<CursorProtocol, MakeTlsConnector>::new(
                         config,
                         tls_conn,
                         queries.len(),
-                    )
-                    .unwrap();
+                    )?;
 
                     source.set_pre_execution_queries(pre_execution_queries);
 
@@ -373,13 +444,12 @@ pub fn new_record_batch_iter(
                             _,
                             PostgresArrowStreamTransport<CursorProtocol, MakeTlsConnector>,
                         >::new(source, destination, origin_query, queries)
-                        .unwrap();
-                    return Box::new(batch_iter);
+                        .map_err(anyhow::Error::from)?;
+                    return Ok(Box::new(batch_iter));
                 }
                 ("cursor", None) => {
                     let mut source =
-                        PostgresSource::<CursorProtocol, NoTls>::new(config, NoTls, queries.len())
-                            .unwrap();
+                        PostgresSource::<CursorProtocol, NoTls>::new(config, NoTls, queries.len())?;
 
                     source.set_pre_execution_queries(pre_execution_queries);
 
@@ -389,18 +459,17 @@ pub fn new_record_batch_iter(
                     >::new(
                         source, destination, origin_query, queries
                     )
-                    .unwrap();
-                    return Box::new(batch_iter);
+                    .map_err(anyhow::Error::from)?;
+                    return Ok(Box::new(batch_iter));
                 }
-                _ => unimplemented!("{} protocol not supported", protocol),
+                _ => throw!(anyhow::anyhow!("{} protocol not supported", protocol)),
             }
         }
         #[cfg(feature = "src_mysql")]
         SourceType::MySQL => match protocol {
             "binary" => {
                 let mut source =
-                    MySQLSource::<MySQLBinaryProtocol>::new(&source_conn.conn[..], queries.len())
-                        .unwrap();
+                    MySQLSource::<MySQLBinaryProtocol>::new(&source_conn.conn[..], queries.len())?;
 
                 source.set_pre_execution_queries(pre_execution_queries);
 
@@ -411,12 +480,12 @@ pub fn new_record_batch_iter(
                         origin_query,
                         queries,
                     )
-                    .unwrap();
-                return Box::new(batch_iter);
+                    .map_err(anyhow::Error::from)?;
+                return Ok(Box::new(batch_iter));
             }
             "text" => {
                 let mut source =
-                    MySQLSource::<TextProtocol>::new(&source_conn.conn[..], queries.len()).unwrap();
+                    MySQLSource::<TextProtocol>::new(&source_conn.conn[..], queries.len())?;
 
                 source.set_pre_execution_queries(pre_execution_queries);
 
@@ -426,77 +495,97 @@ pub fn new_record_batch_iter(
                     origin_query,
                     queries,
                 )
-                .unwrap();
-                return Box::new(batch_iter);
+                .map_err(anyhow::Error::from)?;
+                return Ok(Box::new(batch_iter));
             }
-            _ => unimplemented!("{} protocol not supported", protocol),
+            _ => throw!(anyhow::anyhow!("{} protocol not supported", protocol)),
         },
         #[cfg(feature = "src_sqlite")]
         SourceType::SQLite => {
             // remove the first "sqlite://" manually since url.path is not correct for windows
             let path = &source_conn.conn.as_str()[9..];
-            let source = SQLiteSource::new(path, queries.len()).unwrap();
+            let source = SQLiteSource::new(path, queries.len())?;
             let batch_iter = ArrowBatchIter::<_, SQLiteArrowStreamTransport>::new(
                 source,
                 destination,
                 origin_query,
                 queries,
             )
-            .unwrap();
-            return Box::new(batch_iter);
+            .map_err(anyhow::Error::from)?;
+            return Ok(Box::new(batch_iter));
         }
         #[cfg(feature = "src_mssql")]
         SourceType::MsSQL => {
-            let rt = Arc::new(tokio::runtime::Runtime::new().expect("Failed to create runtime"));
-            let source = MsSQLSource::new(rt, &source_conn.conn[..], queries.len()).unwrap();
-            let batch_iter = ArrowBatchIter::<_, MsSQLArrowStreamTransport>::new(
-                source,
-                destination,
-                origin_query,
-                queries,
-            )
-            .unwrap();
-            return Box::new(batch_iter);
+            let rt = Arc::new(tokio::runtime::Runtime::new()?);
+            match resolved.mssql_backend() {
+                MsSQLBackend::Tiberius => {
+                    let source = MsSQLSource::new(rt, &source_conn.conn[..], queries.len())?;
+                    return Ok(Box::new(
+                        ArrowBatchIter::<_, MsSQLArrowStreamTransport>::new(
+                            source,
+                            destination,
+                            origin_query,
+                            queries,
+                        )
+                        .map_err(anyhow::Error::from)?,
+                    ));
+                }
+                MsSQLBackend::MssqlTds => {
+                    let source = MsSQLBridgeSource::new(rt, &source_conn.conn[..], queries.len())?;
+                    return Ok(Box::new(
+                        ArrowBatchIter::<_, MsSQLBridgeArrowStreamTransport>::new(
+                            source,
+                            destination,
+                            origin_query,
+                            queries,
+                        )
+                        .map_err(anyhow::Error::from)?,
+                    ));
+                }
+            }
         }
         #[cfg(feature = "src_oracle")]
         SourceType::Oracle => {
-            let source = OracleSource::new(&source_conn.conn[..], queries.len()).unwrap();
+            let source = OracleSource::new(&source_conn.conn[..], queries.len())?;
             let batch_iter = ArrowBatchIter::<_, OracleArrowStreamTransport>::new(
                 source,
                 destination,
                 origin_query,
                 queries,
             )
-            .unwrap();
-            return Box::new(batch_iter);
+            .map_err(anyhow::Error::from)?;
+            return Ok(Box::new(batch_iter));
         }
         #[cfg(feature = "src_bigquery")]
         SourceType::BigQuery => {
             let rt = Arc::new(tokio::runtime::Runtime::new().expect("Failed to create runtime"));
-            let source = BigQuerySource::new(rt, &source_conn.conn[..]).unwrap();
+            let source = BigQuerySource::new(rt, &source_conn.conn[..])?;
             let batch_iter = ArrowBatchIter::<_, BigQueryArrowStreamTransport>::new(
                 source,
                 destination,
                 origin_query,
                 queries,
             )
-            .unwrap();
-            return Box::new(batch_iter);
+            .map_err(anyhow::Error::from)?;
+            return Ok(Box::new(batch_iter));
         }
         #[cfg(feature = "src_clickhouse")]
         SourceType::ClickHouse => {
             let rt = Arc::new(tokio::runtime::Runtime::new().expect("Failed to create runtime"));
-            let source = ClickHouseSource::new(rt, &source_conn.conn[..]).unwrap();
+            let source = ClickHouseSource::new(rt, &source_conn.conn[..])?;
             let batch_iter = ArrowBatchIter::<_, ClickHouseArrowStreamTransport>::new(
                 source,
                 destination,
                 origin_query,
                 queries,
             )
-            .unwrap();
-            return Box::new(batch_iter);
+            .map_err(anyhow::Error::from)?;
+            return Ok(Box::new(batch_iter));
         }
         _ => {}
     }
-    panic!("not supported!");
+    throw!(ConnectorXOutError::SourceNotSupport(format!(
+        "{:?}",
+        source_conn.ty
+    )));
 }

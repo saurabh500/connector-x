@@ -54,19 +54,50 @@ cx.read_sql(conn, query)                                        # read data from
 | TIME            | object                      |                                    |
 | UNIQUEIDENTIFIER| object                      |                                    |
 
-### Experimental Rust bridge source
+### Opt-in SQL Server backend
 
-The `src_mssql` feature also compiles
-`connectorx::sources::mssql_bridge::MsSQLBridgeSource`. This source must be
-constructed explicitly in Rust. Normal Python, Rust router, C++, partition,
-metadata, and Arrow streaming entrypoints still select the original Tiberius
-source. No environment selector or automatic fallback is implemented here.
+The `src_mssql` feature compiles both the original Tiberius source and
+`connectorx::sources::mssql_bridge::MsSQLBridgeSource`. **Tiberius remains the
+default.** Set `CONNECTORX_MSSQL_BACKEND=mssql-tds` to opt in to the bridge-backed
+source, or `CONNECTORX_MSSQL_BACKEND=tiberius` to select the original source.
+Only these exact lowercase values are accepted. An unset variable means
+Tiberius; an empty, invalid, or non-Unicode value is a configuration error before
+SQL Server range discovery, metadata, or data connections. Other databases
+ignore this variable. A build without `src_mssql` reports that the selected
+backend is not compiled rather than falling back.
+
+There is no Python argument, URI parameter, or protocol selector for the backend.
+One selection is captured at operation entry, including automatic partition
+range discovery, counts, metadata, and all partitions. This applies to Pandas,
+Arrow, Arrow streaming, and downstream Polars wrappers, as well as standalone
+`partition_sql` and `get_meta`. An existing stream keeps its original source
+even if the environment changes; a subsequent operation can select another
+backend. Avoid changing process environment concurrently with new operations.
+
+Rust `SourceConn` fields and constructors are unchanged and do not read the
+selector. Public execution wrappers (`partition`, `get_col_range`,
+`get_part_query`, `get_arrow`, and `new_record_batch_iter`) resolve it for each
+call, including manually constructed `SourceConn` values. C++ and federated
+Arrow calls use these same wrappers. Bindings that combine partitioning and
+execution use the internal `ResolvedSource` context to share one snapshot.
+Explicitly constructed source objects continue to use their own backend.
+
+`get_arrow::try_new_record_batch_iter` is a fallible Rust constructor. Python
+uses the resolved fallible path, so selection, source creation, and metadata
+errors during construction become Python errors. The legacy Rust factory
+retains its infallible signature and panics on construction errors. **This does
+not redesign midstream error handling:** producer failures may still panic
+under the existing `RecordBatchIterator` contract.
+
+For routing diagnostics, `RUST_LOG=connectorx::mssql_backend=debug` logs the
+selected backend and the backend used for range, metadata, count, and partition
+work. These messages do not include connection strings or SQL.
 
 The bridge source uses the existing SQL Server type system and transport
 conversions. Explicit bindings are `MsSQLBridgeArrowTransport`,
 `MsSQLBridgeArrowStreamTransport`, and the Python crate's
-`pandas::MsSQLBridgePandasTransport`. Its `get_partition_range` helper is also
-explicit; it does not change the existing partition route.
+`pandas::MsSQLBridgePandasTransport`. SQL partition rewriting uses the same
+SQL Server dialect for both backends.
 
 This fork pins the unreleased bridge revision
 `d2e91bd4d75891acefe865c1a28c60abafab2bf4` and depends on

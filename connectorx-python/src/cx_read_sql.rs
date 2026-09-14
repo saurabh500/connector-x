@@ -1,6 +1,6 @@
 use connectorx::{
-    partition::{partition, PartitionQuery},
-    source_router::parse_source,
+    partition::{partition_resolved, PartitionQuery},
+    source_router::{parse_source, ResolvedSource},
     sql::CXQuery,
 };
 use fehler::throw;
@@ -43,11 +43,12 @@ pub fn read_sql<'py>(
     kwargs: Option<&Bound<PyDict>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let source_conn = parse_source(conn, protocol).map_err(|e| ConnectorXPythonError::from(e))?;
+    let resolved = ResolvedSource::new(&source_conn).map_err(ConnectorXPythonError::from)?;
     let (queries, origin_query) = match (queries, partition_query) {
         (Some(queries), None) => (queries.into_iter().map(CXQuery::Naked).collect(), None),
         (None, Some(part)) => {
             let origin_query = Some(part.query.clone());
-            let queries = partition(&part.into(), &source_conn)
+            let queries = partition_resolved(&part.into(), &resolved)
                 .map_err(|e| ConnectorXPythonError::from(e))?;
             (queries, origin_query)
         }
@@ -62,14 +63,14 @@ pub fn read_sql<'py>(
     match return_type {
         "pandas" => Ok(crate::pandas::write_pandas(
             py,
-            &source_conn,
+            &resolved,
             origin_query,
             &queries,
             pre_execution_queries.as_deref(),
         )?),
         "arrow" => Ok(crate::arrow::write_arrow(
             py,
-            &source_conn,
+            &resolved,
             origin_query,
             &queries,
             pre_execution_queries.as_deref(),
@@ -82,7 +83,7 @@ pub fn read_sql<'py>(
 
             Ok(crate::arrow::get_arrow_rb_iter(
                 py,
-                &source_conn,
+                &resolved,
                 origin_query,
                 &queries,
                 pre_execution_queries.as_deref(),

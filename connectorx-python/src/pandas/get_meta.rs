@@ -2,19 +2,20 @@ use super::{
     destination::PandasDestination,
     dispatcher::PandasDispatcher,
     transports::{
-        BigQueryPandasTransport, ClickHousePandasTransport, MsSQLPandasTransport,
-        MysqlPandasTransport, OraclePandasTransport, PostgresPandasTransport,
+        BigQueryPandasTransport, ClickHousePandasTransport, MsSQLBridgePandasTransport,
+        MsSQLPandasTransport, MysqlPandasTransport, OraclePandasTransport, PostgresPandasTransport,
         SqlitePandasTransport, TrinoPandasTransport,
     },
 };
 use crate::errors::ConnectorXPythonError;
-use connectorx::source_router::{SourceConn, SourceType};
+use connectorx::source_router::{MsSQLBackend, ResolvedSource, SourceConn, SourceType};
 use connectorx::{
     prelude::*,
     sources::{
         bigquery::BigQuerySource,
         clickhouse::ClickHouseSource,
         mssql::MsSQLSource,
+        mssql_bridge::MsSQLBridgeSource,
         mysql::{BinaryProtocol as MySQLBinaryProtocol, MySQLSource, TextProtocol},
         postgres::{
             rewrite_tls_args, BinaryProtocol as PgBinaryProtocol, CSVProtocol, CursorProtocol,
@@ -41,6 +42,8 @@ pub fn get_meta<'py>(
     query: String,
 ) -> Bound<'py, PyAny> {
     let source_conn = SourceConn::try_from(conn)?;
+    let resolved = ResolvedSource::new(&source_conn)?;
+    let source_conn = resolved.source();
     let destination = PandasDestination::new();
     let queries = &[CXQuery::Naked(query)];
 
@@ -174,16 +177,29 @@ pub fn get_meta<'py>(
             }
         }
         SourceType::MsSQL => {
-            let rt = Arc::new(tokio::runtime::Runtime::new().expect("Failed to create runtime"));
-            let source = MsSQLSource::new(rt, &source_conn.conn[..], 1)?;
-            let dispatcher = PandasDispatcher::<_, MsSQLPandasTransport>::new(
-                source,
-                destination,
-                queries,
-                None,
-            );
-            debug!("Running dispatcher");
-            dispatcher.get_meta(py)?
+            let rt = Arc::new(tokio::runtime::Runtime::new().map_err(anyhow::Error::from)?);
+            match resolved.mssql_backend() {
+                MsSQLBackend::Tiberius => {
+                    let source = MsSQLSource::new(rt, &source_conn.conn[..], 1)?;
+                    PandasDispatcher::<_, MsSQLPandasTransport>::new(
+                        source,
+                        destination,
+                        queries,
+                        None,
+                    )
+                    .get_meta(py)?
+                }
+                MsSQLBackend::MssqlTds => {
+                    let source = MsSQLBridgeSource::new(rt, &source_conn.conn[..], 1)?;
+                    PandasDispatcher::<_, MsSQLBridgePandasTransport>::new(
+                        source,
+                        destination,
+                        queries,
+                        None,
+                    )
+                    .get_meta(py)?
+                }
+            }
         }
         SourceType::Oracle => {
             let source = OracleSource::new(&source_conn.conn[..], 1)?;

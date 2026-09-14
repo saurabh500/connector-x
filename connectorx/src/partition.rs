@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use crate::errors::{ConnectorXOutError, OutResult};
-use crate::source_router::{SourceConn, SourceType};
+#[cfg(feature = "src_mssql")]
+use crate::source_router::MsSQLBackend;
+use crate::source_router::{ResolvedSource, SourceConn, SourceType};
 #[cfg(feature = "src_bigquery")]
 use crate::sources::bigquery::BigQueryDialect;
 #[cfg(feature = "src_clickhouse")]
@@ -74,10 +76,18 @@ impl PartitionQuery {
 }
 
 pub fn partition(part: &PartitionQuery, source_conn: &SourceConn) -> OutResult<Vec<CXQuery>> {
+    partition_resolved(part, &ResolvedSource::new(source_conn)?)
+}
+
+#[doc(hidden)]
+pub fn partition_resolved(
+    part: &PartitionQuery,
+    resolved: &ResolvedSource,
+) -> OutResult<Vec<CXQuery>> {
     let mut queries = vec![];
     let num = part.num as i64;
     let (min, max) = match (part.min, part.max) {
-        (None, None) => get_col_range(source_conn, &part.query, &part.column)?,
+        (None, None) => get_col_range_resolved(resolved, &part.query, &part.column)?,
         (Some(min), Some(max)) => (min, max),
         _ => throw!(anyhow!(
             "partition_query range can not be partially specified",
@@ -92,13 +102,24 @@ pub fn partition(part: &PartitionQuery, source_conn: &SourceConn) -> OutResult<V
             true => max + 1,
             false => min + (i + 1) * partition_size,
         };
-        let partition_query = get_part_query(source_conn, &part.query, &part.column, lower, upper)?;
+        let partition_query =
+            get_part_query_resolved(resolved, &part.query, &part.column, lower, upper)?;
         queries.push(partition_query);
     }
     Ok(queries)
 }
 
 pub fn get_col_range(source_conn: &SourceConn, query: &str, col: &str) -> OutResult<(i64, i64)> {
+    get_col_range_resolved(&ResolvedSource::new(source_conn)?, query, col)
+}
+
+#[doc(hidden)]
+pub fn get_col_range_resolved(
+    resolved: &ResolvedSource,
+    query: &str,
+    col: &str,
+) -> OutResult<(i64, i64)> {
+    let source_conn = resolved.source();
     match source_conn.ty {
         #[cfg(feature = "src_postgres")]
         SourceType::Postgres => pg_get_partition_range(&source_conn.conn, query, col),
@@ -107,7 +128,17 @@ pub fn get_col_range(source_conn: &SourceConn, query: &str, col: &str) -> OutRes
         #[cfg(feature = "src_mysql")]
         SourceType::MySQL => mysql_get_partition_range(&source_conn.conn, query, col),
         #[cfg(feature = "src_mssql")]
-        SourceType::MsSQL => mssql_get_partition_range(&source_conn.conn, query, col),
+        SourceType::MsSQL => {
+            log::debug!(target: "connectorx::mssql_backend", "MSSQL range backend: {}", resolved.mssql_backend().name());
+            match resolved.mssql_backend() {
+                MsSQLBackend::Tiberius => mssql_get_partition_range(&source_conn.conn, query, col),
+                MsSQLBackend::MssqlTds => Ok(crate::sources::mssql_bridge::get_partition_range(
+                    &source_conn.conn,
+                    query,
+                    col,
+                )?),
+            }
+        }
         #[cfg(feature = "src_oracle")]
         SourceType::Oracle => oracle_get_partition_range(&source_conn.conn, query, col),
         #[cfg(feature = "src_bigquery")]
@@ -128,6 +159,18 @@ pub fn get_part_query(
     lower: i64,
     upper: i64,
 ) -> CXQuery<String> {
+    get_part_query_resolved(&ResolvedSource::new(source_conn)?, query, col, lower, upper)?
+}
+
+#[throws(ConnectorXOutError)]
+fn get_part_query_resolved(
+    resolved: &ResolvedSource,
+    query: &str,
+    col: &str,
+    lower: i64,
+    upper: i64,
+) -> CXQuery<String> {
+    let source_conn = resolved.source();
     let query = match source_conn.ty {
         #[cfg(feature = "src_postgres")]
         SourceType::Postgres => {

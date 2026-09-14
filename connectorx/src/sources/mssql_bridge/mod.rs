@@ -162,6 +162,7 @@ impl Source for MsSQLBridgeSource {
     }
 
     fn fetch_metadata(&mut self) -> Result<()> {
+        log::debug!(target: "connectorx::mssql_backend", "MSSQL metadata backend: mssql-tds");
         let query = self
             .queries
             .first()
@@ -195,6 +196,7 @@ impl Source for MsSQLBridgeSource {
     fn result_rows(&mut self) -> Result<Option<usize>> {
         match &self.origin_query {
             Some(q) => {
+                log::debug!(target: "connectorx::mssql_backend", "MSSQL count backend: mssql-tds");
                 let query = count_query(&CXQuery::Naked(q.clone()), &MsSqlDialect {})?;
                 let mut conn = self.rt.block_on(self.pool.get())?;
                 Ok(Some(
@@ -245,12 +247,14 @@ impl SourcePartition for MsSQLBridgeSourcePartition {
     type Error = MsSQLBridgeSourceError;
 
     fn result_rows(&mut self) -> Result<()> {
+        log::debug!(target: "connectorx::mssql_backend", "MSSQL partition count backend: mssql-tds");
         let query = count_query(&self.query, &MsSqlDialect {})?;
         let mut conn = self.rt.block_on(self.pool.get())?;
         self.nrows = self.rt.block_on(count_rows(&mut conn, query.as_str()))?;
         Ok(())
     }
     fn parser(&mut self) -> Result<Self::Parser<'_>> {
+        log::debug!(target: "connectorx::mssql_backend", "MSSQL partition backend: mssql-tds");
         let mut conn = self.rt.block_on(self.pool.get())?;
         if !self
             .rt

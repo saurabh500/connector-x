@@ -153,6 +153,7 @@ where
 
     #[throws(MsSQLSourceError)]
     fn fetch_metadata(&mut self) {
+        debug!(target: "connectorx::mssql_backend", "MSSQL metadata backend: tiberius");
         assert!(!self.queries.is_empty());
 
         let mut conn = self.rt.block_on(self.pool.get())?;
@@ -195,6 +196,7 @@ where
     fn result_rows(&mut self) -> Option<usize> {
         match &self.origin_query {
             Some(q) => {
+                debug!(target: "connectorx::mssql_backend", "MSSQL count backend: tiberius");
                 let cxq = CXQuery::Naked(q.clone());
                 let cquery = count_query(&cxq, &MsSqlDialect {})?;
                 let mut conn = self.rt.block_on(self.pool.get())?;
@@ -269,6 +271,7 @@ impl SourcePartition for MsSQLSourcePartition {
 
     #[throws(MsSQLSourceError)]
     fn result_rows(&mut self) {
+        debug!(target: "connectorx::mssql_backend", "MSSQL partition count backend: tiberius");
         let cquery = count_query(&self.query, &MsSqlDialect {})?;
         let mut conn = self.rt.block_on(self.pool.get())?;
 
@@ -284,6 +287,7 @@ impl SourcePartition for MsSQLSourcePartition {
 
     #[throws(MsSQLSourceError)]
     fn parser<'a>(&'a mut self) -> Self::Parser<'a> {
+        debug!(target: "connectorx::mssql_backend", "MSSQL partition backend: tiberius");
         let conn = self.rt.block_on(self.pool.get())?;
         let rows: OwningHandle<Box<Conn<'a>>, DummyBox<QueryStream<'a>>> =
             OwningHandle::new_with_fn(Box::new(conn), |conn: *const Conn<'a>| unsafe {
