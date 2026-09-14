@@ -127,10 +127,72 @@ boundaries are explicit; incompatible column names, types, nullability,
 precision, or scale are errors, not silently flattened data. Failed refills
 discard partial rows and stay failed; EOF stays EOF. New-backend datetimeoffset
 conversion normalizes to UTC; the legacy Tiberius conversion is unchanged.
-No new performance claim is made by this integration.
+Compatibility alone does not imply a performance gain.
 
 The ignored `sources::mssql_bridge::tests::live_*` Rust tests require an
 explicit `MSSQL_URL` and run read-only queries without creating fixtures.
+
+### Same-wheel SF1 LINEITEM transfer check (2026-09-14)
+
+One default-feature release wheel containing both backends was built from
+runtime commit `2cff2bc010d43c7ce7da3955a6f941bf6ae35f81` using Rust 1.91.1.
+Both methods used that same installed native extension and dependencies:
+Python 3.12.10, NumPy 2.5.3, Pandas 2.3.3, and PyArrow 23.0.1 on Windows 11
+(32 logical client CPUs). The session-owned SQL Server 2025 Docker container
+was limited to **8 GiB and 4 CPUs**, bound to loopback, with `encrypt=true`
+and explicit self-signed-certificate trust for both methods.
+
+The workload was `SELECT * FROM lineitem`: all 16 columns and 6,001,215 rows
+of SF1 data, returned as a fully materialized Pandas dataframe using four
+automatic partitions on `l_orderkey`. This is a full-table transfer check,
+not the TPC-H query suite or an official TPC result.
+
+| Backend | Median read time | Measured range | Median process peak RSS |
+|:--|--:|--:|--:|
+| `tiberius` | 103.003 s | 102.219-139.469 s | 2.713 GiB |
+| `mssql-tds` (bridge-backed) | 93.192 s | 91.659-93.780 s | 2.712 GiB |
+
+The bridge had **9.5% lower median elapsed time** (about 1.105x the transfer
+rate), with essentially unchanged peak memory in this run. The 139.469 s
+Tiberius sample was retained. These are descriptive results from five
+measured samples per backend on a shared host, not a general speedup promise
+or a 20% qualification gate.
+
+Each backend had two warmups followed by five measured reads. Workers ran
+serially in fresh processes, alternating backend order deterministically by
+round (not randomized), with warm server/OS caches and no cache flush.
+Timing covered `cx.read_sql` through return of the complete dataframe;
+imports, reference validation, and subsequent worker shutdown were excluded.
+OS process peak RSS was captured immediately after the read, before validation.
+All 14 samples passed schema, row-count, null, aggregate, and canonical
+multiset-fingerprint checks against the preserved SF1 reference.
+
+<details>
+<summary>All 14 read times, including warmups (seconds)</summary>
+
+| Round | Order | Tiberius | Bridge |
+|:--|:--|--:|--:|
+| Warmup 1 | Tiberius, bridge | 101.595 | 130.328 |
+| Warmup 2 | Bridge, Tiberius | 101.145 | 90.840 |
+| Measured 1 | Tiberius, bridge | 139.469 | 91.659 |
+| Measured 2 | Bridge, Tiberius | 102.324 | 92.569 |
+| Measured 3 | Tiberius, bridge | 103.003 | 93.192 |
+| Measured 4 | Bridge, Tiberius | 102.219 | 93.780 |
+| Measured 5 | Tiberius, bridge | 103.238 | 93.698 |
+
+</details>
+
+Wheel SHA256:
+`08898c3e1c3208a7b8ddd7ba7f5967f672af38f1497c20adf41b3c926c49cc90`.
+Installed native-extension SHA256 (also verified inside the wheel):
+`9885578544cfd723b02cbaa8f8e9c3852de93bf1e5717f5bddb2b83dc73025e4`.
+
+Separately, 16 small canonical Arrow workers passed correctness checks for
+numeric, mixed, decimal/text, and wide-LOB data with one and four partitions.
+Those are correctness smoke checks, not statistical performance measurements.
+No SF10 result is claimed, and earlier direct-adapter measurements on other
+hardware were not pooled with this bridge-backed comparison. Tiberius remains
+the default, and the unreleased bridge pin still requires release qualification.
 
 ### Performance (r5.4xlarge docker in another EC2 instance)
 
