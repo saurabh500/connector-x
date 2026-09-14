@@ -92,6 +92,24 @@ impl ResolvedSource {
         })
     }
 
+    #[cfg(feature = "fed_exec")]
+    pub(crate) fn new_many(sources: Vec<&SourceConn>) -> Result<Vec<Self>> {
+        let backend = sources
+            .iter()
+            .find(|source| matches!(source.ty, SourceType::MsSQL))
+            .map(|source| Self::new(source))
+            .transpose()?
+            .map(|resolved| resolved.mssql_backend)
+            .unwrap_or(MsSQLBackend::Tiberius);
+        Ok(sources
+            .into_iter()
+            .map(|source| Self {
+                source: source.clone(),
+                mssql_backend: backend,
+            })
+            .collect())
+    }
+
     pub fn source(&self) -> &SourceConn {
         &self.source
     }

@@ -23,3 +23,5 @@ jobs:
         run: cargo test -p connectorx --locked --lib --features dst_arrow source_router::tests
       - name: Both SQL Server transports and operation snapshots
         run: cargo test -p connectorx --locked --lib --features src_mssql,dst_arrow
+      - name: Compile federated native routes
+        run: cargo check -p connectorx --locked --features src_mssql,dst_arrow,federation,fed_exec

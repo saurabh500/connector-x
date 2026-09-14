@@ -77,8 +77,10 @@ backend. Avoid changing process environment concurrently with new operations.
 Rust `SourceConn` fields and constructors are unchanged and do not read the
 selector. Public execution wrappers (`partition`, `get_col_range`,
 `get_part_query`, `get_arrow`, and `new_record_batch_iter`) resolve it for each
-call, including manually constructed `SourceConn` values. C++ and federated
-Arrow calls use these same wrappers. Bindings that combine partitioning and
+call, including manually constructed `SourceConn` values. C++ Arrow calls use
+these same wrappers. Federated reads capture one selection for all SQL Server
+connections before rewriting the query and reuse it across remote fragments.
+Bindings that combine partitioning and
 execution use the internal `ResolvedSource` context to share one snapshot.
 Explicitly constructed source objects continue to use their own backend.
 

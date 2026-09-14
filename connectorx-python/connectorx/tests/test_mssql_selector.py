@@ -56,6 +56,8 @@ import os
 import sqlite3
 import connectorx as cx
 path = os.environ["CX_SQLITE_PATH"]
+os.chdir(os.path.dirname(path))
+path = os.path.basename(path)
 with sqlite3.connect(path) as db:
     db.execute("CREATE TABLE numbers (id INTEGER)")
     db.execute("INSERT INTO numbers VALUES (1)")
