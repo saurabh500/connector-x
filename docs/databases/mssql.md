@@ -102,13 +102,13 @@ conversions. Explicit bindings are `MsSQLBridgeArrowTransport`,
 SQL Server dialect for both backends.
 
 This fork pins the unreleased bridge revision
-`1f74ea89da85dc4ea08498c521f8b070cc9cc484` and depends on
-[bridge PR 126](https://github.com/saurabh500/mssql-tiberius-bridge/pull/126).
-Published bridge 0.1.0 does not expose metadata for empty rowsets; this approved
-commit dependency changes the bridge's `query`/`simple_query` to return a
-borrowed Tiberius-style `QueryStream`, exposes metadata for empty rowsets, and
-corrects fixed-width CHAR, BINARY, and SMALLMONEY metadata mappings.
-The separate fast-path bridge PR 124 is not a dependency of this layer.
+`1bede8e89cca761999952158617fbd7d85808733`: merged bridge main
+`a62b4b1af252ab156cb85bfd041eea7215d11df4` plus the minimal, pending
+[bridge PR 140](https://github.com/saurabh500/mssql-tiberius-bridge/pull/140).
+That follow-up corrects only fixed-width CHAR, BINARY, and SMALLMONEY metadata
+mappings; it is not yet merged. Merged main exposes empty-rowset metadata
+through its borrowed `QueryStream` compatibility API, which published bridge
+0.1.0 lacked. The earlier bridge PRs 126 and 124 are not dependencies.
 Replace the git dependency with a released version before product shipping.
 ConnectorX depends only on the bridge, not directly on `mssql-tds`, and does not
 enable the bridge's Arrow feature.
@@ -133,8 +133,15 @@ are discarded. Dropping a stream between yielded items leaves unread results
 for the next real query to drain. Checkout validation executes and drains
 `SELECT 1`; it does not use the bridge's cached `ping`.
 
-This compatibility layer follows the legacy `query(...).await`,
-`stream.columns().await`, and `stream.into_row().await` call sequence. It uses
+This compatibility layer uses the merged bridge's synchronous, lazy
+`query_compat(...)`, not its buffered `query`/`simple_query` methods.
+Metadata uses `stream.columns().await`; counts, ranges, and pool validation use
+the draining `stream.into_row().await` collector. Parser construction explicitly
+awaits `columns()` before returning, propagating initial query errors without
+consuming the first metadata event. With empty parameters, this bridge API sends
+a SQL Batch rather than the RPC used by the earlier pinned query API; this is
+not a claim of wire-protocol parity with Tiberius.
+It uses
 ordinary owned bridge `Row` values and metadata events, retaining the legacy
 bounded 32-item refill loop and per-item runtime
 entry. It does not use custom row writers or the separate fast-path APIs.
@@ -148,6 +155,15 @@ stays EOF. New-backend datetimeoffset conversion normalizes to UTC; the legacy
 Tiberius conversion is unchanged. No performance claim is made for this
 compatibility implementation; measurements of the earlier fast-path experiment
 do not describe this code.
+
+The small Row conversion layer remains necessary: the root bridge getters
+return `None` for both NULL and a type mismatch, and ConnectorX must distinguish
+them. The fallible compatibility getters build a whole-row owned `ColumnData`
+cache, including copied text and binary values, and their exact numeric variants
+do not preserve ConnectorX's integer/float widening. Existing conversion checks
+also preserve decimal magnitude/scale limits, datetime 1/300-second precision,
+money-to-float mapping, and the local UUID 1-to-0.8 adaptation. No additional
+conversion cache or speculative facade is introduced.
 
 The ignored `sources::mssql_bridge::tests::live_*` Rust tests require an
 explicit `MSSQL_URL` and run read-only queries without creating fixtures.

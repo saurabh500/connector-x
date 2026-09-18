@@ -32,7 +32,7 @@ polars-arrow = { workspace = true, optional = true }
 bb8 = { version = "0.7", optional = true }
 bb8-tiberius = { version = "0.8", optional = true }
 async-trait = { version = "0.1", optional = true }
-mssql-tiberius-bridge = { git = "https://github.com/saurabh500/mssql-tiberius-bridge", rev = "1f74ea89da85dc4ea08498c521f8b070cc9cc484", default-features = false, optional = true }
+mssql-tiberius-bridge = { git = "https://github.com/saurabh500/mssql-tiberius-bridge", rev = "1bede8e89cca761999952158617fbd7d85808733", default-features = false, optional = true }
 csv = { version = "1", optional = true }
 fallible-streaming-iterator = { version = "0.1", optional = true }
 futures = { version = "0.3", optional = true }

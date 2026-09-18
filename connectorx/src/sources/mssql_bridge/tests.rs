@@ -57,10 +57,7 @@ fn live_pool_validates_and_reuses_connections_after_partial_reads() {
             for _ in 0..2 {
                 assert!(!manager.has_broken(&mut conn));
                 {
-                    let mut items = conn
-                        .query("SELECT 1 UNION ALL SELECT 2", &[])
-                        .await
-                        .unwrap();
+                    let mut items = conn.query_compat("SELECT 1 UNION ALL SELECT 2", &[]);
                     assert!(matches!(
                         items.next().await.unwrap().unwrap(),
                         QueryItem::Metadata(_)
@@ -73,9 +70,7 @@ fn live_pool_validates_and_reuses_connections_after_partial_reads() {
                 assert!(!manager.has_broken(&mut conn));
                 manager.is_valid(&mut conn).await.unwrap();
                 assert_eq!(
-                    conn.query("SELECT 42", &[])
-                        .await
-                        .unwrap()
+                    conn.query_compat("SELECT 42", &[])
                         .into_row()
                         .await
                         .unwrap()
@@ -85,10 +80,7 @@ fn live_pool_validates_and_reuses_connections_after_partial_reads() {
                     Some(42)
                 );
             }
-            let mut items = conn
-                .query("SELECT 1 UNION ALL SELECT 2", &[])
-                .await
-                .unwrap();
+            let mut items = conn.query_compat("SELECT 1 UNION ALL SELECT 2", &[]);
             assert!(matches!(
                 items.next().await.unwrap().unwrap(),
                 QueryItem::Metadata(_)
@@ -179,17 +171,13 @@ fn live_row_stream_refills_boundaries_and_trailing_errors() {
     rt.block_on(async {
         let mut conn = Client::connect(&config).await.unwrap();
         assert!(conn
-            .query("SELECT 1 AS n WHERE 1=0; SELECT 2 AS n", &[])
-            .await
-            .unwrap()
+            .query_compat("SELECT 1 AS n WHERE 1=0; SELECT 2 AS n", &[])
             .into_row()
             .await
             .unwrap()
             .is_none());
         assert!(conn
-            .query("SELECT 1 AS n; RAISERROR('cx trailing error',16,1)", &[])
-            .await
-            .unwrap()
+            .query_compat("SELECT 1 AS n; RAISERROR('cx trailing error',16,1)", &[])
             .into_row()
             .await
             .is_err());
@@ -204,6 +192,8 @@ fn live_row_stream_refills_boundaries_and_trailing_errors() {
         assert!(source.fetch_metadata().is_err());
     }
     partitions[0].query = CXQuery::naked("SELECT missing_column FROM (VALUES (1)) AS t(n)");
+    assert!(partitions[0].parser().is_err());
+    partitions[0].query = CXQuery::naked("RAISERROR('cx initial error',16,1)");
     assert!(partitions[0].parser().is_err());
     let mut source = MsSQLBridgeSource::new(rt, &uri, 1).unwrap();
     source.set_queries(&[CXQuery::naked("SELECT CAST(1 AS int) AS n WHERE 1=0")]);

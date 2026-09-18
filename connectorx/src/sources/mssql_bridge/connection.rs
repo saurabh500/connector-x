@@ -83,8 +83,7 @@ impl ManageConnection for ConnectionManager {
         &self,
         conn: &mut bb8::PooledConnection<'_, Self>,
     ) -> Result<(), Self::Error> {
-        conn.query("SELECT 1", &[])
-            .await?
+        conn.query_compat("SELECT 1", &[])
             .into_row()
             .await
             .map(|_| ())

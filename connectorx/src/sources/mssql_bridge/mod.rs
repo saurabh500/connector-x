@@ -81,8 +81,7 @@ impl MsSQLBridgeSource {
 
 async fn count_rows(conn: &mut Client, query: &str) -> Result<usize> {
     let row = conn
-        .query(query, &[])
-        .await?
+        .query_compat(query, &[])
         .into_row()
         .await?
         .ok_or(MsSQLBridgeSourceError::GetNRowsFailed)?;
@@ -97,8 +96,7 @@ pub fn get_partition_range(conn: &Url, query: &str, col: &str) -> Result<(i64, i
     rt.block_on(async {
         let mut client = Client::connect(&config).await?;
         let row = client
-            .query(query.as_str(), &[])
-            .await?
+            .query_compat(query.as_str(), &[])
             .into_row()
             .await?
             .ok_or_else(|| anyhow!("SQL Server returned no partition range"))?;
@@ -154,7 +152,7 @@ impl Source for MsSQLBridgeSource {
             .ok_or_else(|| anyhow!("SQL Server requires a query"))?;
         let mut conn = self.rt.block_on(self.pool.get())?;
         let columns = self.rt.block_on(async {
-            let mut stream = conn.query(query.as_str(), &[]).await?;
+            let mut stream = conn.query_compat(query.as_str(), &[]);
             let columns = stream
                 .columns()
                 .await?
@@ -240,9 +238,9 @@ impl SourcePartition for MsSQLBridgeSourcePartition {
         // As in the legacy source, the stable boxed owner outlives its borrowing stream.
         let items = OwningHandle::try_new(Box::new(conn), |conn: *const Conn<'_>| unsafe {
             let conn = &mut *(conn as *mut Conn<'_>);
-            self.rt
-                .block_on(conn.query(self.query.as_str(), &[]))
-                .map(DummyBox)
+            let mut stream = conn.query_compat(self.query.as_str(), &[]);
+            self.rt.block_on(stream.columns())?;
+            Ok::<_, mssql_tiberius_bridge::Error>(DummyBox(stream))
         })?;
         Ok(MsSQLBridgeSourceParser {
             rt: self.rt.handle(),

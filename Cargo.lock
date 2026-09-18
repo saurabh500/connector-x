@@ -4759,7 +4759,7 @@ dependencies = [
 [[package]]
 name = "mssql-tiberius-bridge"
 version = "0.1.0"
-source = "git+https://github.com/saurabh500/mssql-tiberius-bridge?rev=1f74ea89da85dc4ea08498c521f8b070cc9cc484#1f74ea89da85dc4ea08498c521f8b070cc9cc484"
+source = "git+https://github.com/saurabh500/mssql-tiberius-bridge?rev=1bede8e89cca761999952158617fbd7d85808733#1bede8e89cca761999952158617fbd7d85808733"
 dependencies = [
  "async-stream",
  "async-trait",
